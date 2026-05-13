@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { AlertTriangle, BarChart3, CalendarClock, Clipboard, Eye, EyeOff, Moon, Package, ShieldCheck, Signal, Sun, Timer, User } from "lucide-react";
 import { getSupabaseClient } from "@/lib/supabase";
-import type { AccessKey, PerformanceLog, Signal as TradingSignal, SignalMode } from "@/lib/types";
+import type { PerformanceLog, Signal as TradingSignal, SignalMode } from "@/lib/types";
 
 type Tab = "signal" | "performance";
 type RangePreset = "day" | "week" | "month" | "custom";
@@ -329,65 +329,17 @@ export default function Home() {
   }, [authorized, supabase, fetchDashboardData]);
 
   useEffect(() => {
-    if (!authorized || !supabase || !activeAccessKeyId || !activeSessionToken) return;
-    const sb = supabase;
-    const watch = sb
-      .channel(`access-key-session-${activeAccessKeyId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "access_keys", filter: `id=eq.${activeAccessKeyId}` },
-        (payload) => {
-          if (payload.eventType === "DELETE") {
-            setAuthorized(false);
-            setAuthError("Access key revoked. Please contact admin.");
-            setActiveAccessKeyId(null);
-            setActiveSessionToken(null);
-            setAccountName("-");
-            setAccountPackage("-");
-            setSubscriptionExpiry(null);
-            setSessionSeconds(SESSION_MINUTES * 60);
-            return;
-          }
-          const next = payload.new as AccessKey;
-          if (!next.is_active) {
-            setAuthorized(false);
-            setAuthError("Access key inactive. Please contact admin.");
-            setActiveAccessKeyId(null);
-            setActiveSessionToken(null);
-            setAccountName("-");
-            setAccountPackage("-");
-            setSubscriptionExpiry(null);
-            setSessionSeconds(SESSION_MINUTES * 60);
-            return;
-          }
-          setSubscriptionExpiry(next.expired_at ?? null);
-          if (next.session_token !== activeSessionToken) {
-            setAuthorized(false);
-            setAuthError("Session moved to another device. Please authorize again.");
-            setActiveAccessKeyId(null);
-            setActiveSessionToken(null);
-            setAccountName("-");
-            setAccountPackage("-");
-            setSubscriptionExpiry(null);
-            setSessionSeconds(SESSION_MINUTES * 60);
-          }
-        },
-      )
-      .subscribe();
-
-    return () => {
-      void sb.removeChannel(watch);
-    };
-  }, [authorized, supabase, activeAccessKeyId, activeSessionToken]);
-
-  useEffect(() => {
-    if (!authorized || !supabase || !activeAccessKeyId || !activeSessionToken) return;
-    const sb = supabase;
+    if (!authorized || !activeAccessKeyId || !activeSessionToken) return;
     const timer = setInterval(async () => {
-      const { data, error } = await sb.from("access_keys").select("session_token,is_active").eq("id", activeAccessKeyId).maybeSingle();
-      if (error || !data) {
+      const res = await fetch("/api/access/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessKeyId: activeAccessKeyId, sessionToken: activeSessionToken }),
+      });
+      const json = (await res.json().catch(() => null)) as { error?: string; data?: { expired_at: string | null } } | null;
+      if (!res.ok) {
         setAuthorized(false);
-        setAuthError("Access key revoked. Please contact admin.");
+        setAuthError(json?.error ?? "Access key revoked. Please contact admin.");
         setActiveAccessKeyId(null);
         setActiveSessionToken(null);
         setAccountName("-");
@@ -396,30 +348,13 @@ export default function Home() {
         setSessionSeconds(SESSION_MINUTES * 60);
         return;
       }
-      if (!data.is_active) {
-        setAuthorized(false);
-        setAuthError("Access key inactive. Please contact admin.");
-        setActiveAccessKeyId(null);
-        setActiveSessionToken(null);
-        setAccountName("-");
-        setAccountPackage("-");
-        setSessionSeconds(SESSION_MINUTES * 60);
-        return;
-      }
-      if (data.session_token !== activeSessionToken) {
-        setAuthorized(false);
-        setAuthError("Session moved to another device. Please authorize again.");
-        setActiveAccessKeyId(null);
-        setActiveSessionToken(null);
-        setAccountName("-");
-        setAccountPackage("-");
-        setSubscriptionExpiry(null);
-        setSessionSeconds(SESSION_MINUTES * 60);
+      if (json?.data) {
+        setSubscriptionExpiry(json.data.expired_at ?? null);
       }
     }, 5000);
 
     return () => clearInterval(timer);
-  }, [authorized, supabase, activeAccessKeyId, activeSessionToken]);
+  }, [authorized, activeAccessKeyId, activeSessionToken]);
 
   const activeSignals = useMemo(() => signals.filter((s) => s.mode === mode), [signals, mode]);
   const activeSignal = activeSignals.find((s) => s.status === "active") ?? activeSignals[0];
@@ -531,46 +466,24 @@ export default function Home() {
     setAuthError(null);
 
     try {
-      const fingerprint = await getFingerprint();
-      const sb = supabase;
-      const { data, error } = await sb.from("access_keys").select("*").eq("key", accessKey.trim()).maybeSingle();
+      const res = await fetch("/api/access/authorize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: accessKey.trim(), fingerprint: await getFingerprint() }),
+      });
+      const json = (await res.json().catch(() => null)) as {
+        error?: string;
+        data?: { id: string; label: string | null; expired_at: string | null; session_token: string };
+      } | null;
 
-      if (error || !data) {
-        setAuthError("Authorization denied: invalid key.");
+      if (!res.ok || !json?.data) {
+        setAuthError(json?.error ?? "Authorization denied: invalid key.");
         return;
       }
 
-      const row = data as AccessKey;
-      if (!row.is_active) {
-        setAuthError("Authorization denied: key inactive.");
-        return;
-      }
-      if (row.expired_at && new Date(row.expired_at).getTime() < Date.now()) {
-        setAuthError("Authorization denied: key expired.");
-        return;
-      }
-
-      if (row.fingerprint_id && row.fingerprint_id !== fingerprint) {
-        void sb.from("security_alerts").insert({ access_key_id: row.id, reason: "session_takeover", detected_fingerprint: fingerprint });
-      }
-
-      const newSessionToken = createSessionToken();
-      const { error: updateError } = await sb
-        .from("access_keys")
-        .update({
-          fingerprint_id: fingerprint,
-          session_token: newSessionToken,
-          last_login_at: new Date().toISOString(),
-        })
-        .eq("id", row.id);
-
-      if (updateError) {
-        setAuthError("Authorization denied: failed to open new session.");
-        return;
-      }
-
+      const row = json.data;
       setActiveAccessKeyId(row.id);
-      setActiveSessionToken(newSessionToken);
+      setActiveSessionToken(row.session_token);
       const parsedName = row.label?.split("|")[0]?.trim();
       const parsedPackageRaw = row.label?.split("|")[1]?.trim() ?? "";
       const daysMatch = parsedPackageRaw.match(/(\d+)\s*D/i);
@@ -1102,10 +1015,6 @@ function Card({ title, value, meta, highlight = true, className = "", copyValue 
       {meta && <p className="mt-2 text-xs text-emerald-300/60">{meta}</p>}
     </article>
   );
-}
-
-function createSessionToken() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}-${crypto.randomUUID()}`;
 }
 
 function Level({ label, value, positive, danger, muted, copyable = false }: { label: string; value: number; positive?: boolean; danger?: boolean; muted?: boolean; copyable?: boolean }) {

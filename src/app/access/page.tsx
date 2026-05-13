@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
-import { AlertTriangle, BarChart3, CalendarClock, Clipboard, Moon, Package, ShieldCheck, Signal, Sun, Timer, User } from "lucide-react";
+import { AlertTriangle, BarChart3, CalendarClock, Clipboard, Eye, EyeOff, Moon, Package, ShieldCheck, Signal, Sun, Timer, User } from "lucide-react";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { AccessKey, PerformanceLog, Signal as TradingSignal, SignalMode } from "@/lib/types";
 
@@ -73,6 +73,7 @@ export default function Home() {
   const [accessKey, setAccessKey] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [loadingAuth, setLoadingAuth] = useState(false);
+  const [showAccessKey, setShowAccessKey] = useState(false);
 
   const [tab, setTab] = useState<Tab>("signal");
   const [mode, setMode] = useState<SignalMode>("scalping");
@@ -104,15 +105,15 @@ export default function Home() {
   const lastSeenSignalIdRef = useRef<string | null>(null);
   const lastSeenPerfIdRef = useRef<string | null>(null);
 
-  const pushLiveAlert = (alert: LiveAlert) => {
+  const pushLiveAlert = useCallback((alert: LiveAlert) => {
     setLiveAlerts((prev) => [alert, ...prev].slice(0, 20));
     setActiveSignalPopup(alert);
     if (typeof window !== "undefined" && notificationPermission === "granted") {
       new Notification(alert.title, { body: alert.message });
     }
-  };
+  }, [notificationPermission]);
 
-  const fetchDashboardData = async (sb: NonNullable<ReturnType<typeof getSupabaseClient>>) => {
+  const fetchDashboardData = useCallback(async (sb: NonNullable<ReturnType<typeof getSupabaseClient>>) => {
     const [signalRes, serverLogRes] = await Promise.all([
       sb.from("signals").select("*").eq("pair", "XAUUSD").order("created_at", { ascending: false }).limit(50),
       fetch("/api/performance-logs?limit=300", { cache: "no-store" }),
@@ -128,7 +129,7 @@ export default function Home() {
       // keep existing logs when server fetch fails
     }
     setLastSync(new Date().toLocaleTimeString());
-  };
+  }, []);
 
   useEffect(() => {
     const saved = typeof window !== "undefined" ? window.localStorage.getItem("shinobi-indi-theme") : null;
@@ -226,7 +227,7 @@ export default function Home() {
     } else if (latestPerf) {
       lastSeenPerfIdRef.current = latestPerf.id;
     }
-  }, [authorized, signals, logs]);
+  }, [authorized, signals, logs, pushLiveAlert]);
 
   useEffect(() => {
     if (!authorized || !supabase) return;
@@ -316,7 +317,7 @@ export default function Home() {
     return () => {
       void sb.removeChannel(channel);
     };
-  }, [authorized, supabase]);
+  }, [authorized, supabase, fetchDashboardData, pushLiveAlert]);
 
   useEffect(() => {
     if (!authorized || !supabase) return;
@@ -325,7 +326,7 @@ export default function Home() {
       void fetchDashboardData(sb);
     }, 15000);
     return () => clearInterval(timer);
-  }, [authorized, supabase]);
+  }, [authorized, supabase, fetchDashboardData]);
 
   useEffect(() => {
     if (!authorized || !supabase || !activeAccessKeyId || !activeSessionToken) return;
@@ -603,6 +604,13 @@ export default function Home() {
     setActiveSignalPopup(null);
   };
 
+  const clearSavedAccessKey = () => {
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(ACCESS_KEY_STORAGE_KEY);
+    }
+    setAccessKey("");
+  };
+
   const refreshNow = async () => {
     if (!supabase || isRefreshing) return;
     setIsRefreshing(true);
@@ -648,12 +656,24 @@ export default function Home() {
             SHINOBI INDI
           </h1>
           <label className="mb-2 block text-xs uppercase tracking-[0.25em] text-[#d4af37]">Authorization Key</label>
-          <input
-            value={accessKey}
-            onChange={(e) => setAccessKey(e.target.value)}
-            className={`w-full rounded border px-3 py-2 outline-none ring-emerald-400/40 focus:ring ${loginDark ? "border-emerald-400/30 bg-black text-emerald-200" : "border-emerald-700/60 bg-white text-[#0f172a]"}`}
-            placeholder="ENTER_KEY"
-          />
+          <div className="relative">
+            <input
+              type={showAccessKey ? "text" : "password"}
+              value={accessKey}
+              onChange={(e) => setAccessKey(e.target.value)}
+              className={`w-full rounded border px-3 py-2 pr-11 outline-none ring-emerald-400/40 focus:ring ${loginDark ? "border-emerald-400/30 bg-black text-emerald-200" : "border-emerald-700/60 bg-white text-[#0f172a]"}`}
+              placeholder="ENTER_KEY"
+            />
+            <button
+              type="button"
+              onClick={() => setShowAccessKey((prev) => !prev)}
+              className={`absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 ${loginDark ? "text-[#d4af37] hover:bg-[#d4af37]/10" : "text-slate-600 hover:bg-slate-100"}`}
+              aria-label={showAccessKey ? "Hide access key" : "Show access key"}
+              title={showAccessKey ? "Hide" : "Show"}
+            >
+              {showAccessKey ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
           {authError && <p className="mt-3 flex items-center gap-2 text-sm text-red-400"><AlertTriangle size={14} />{authError}</p>}
           {!supabase && <p className="mt-3 text-xs text-red-400">Supabase environment variables are missing.</p>}
           <button
@@ -664,6 +684,17 @@ export default function Home() {
             }`}
           >
             {loadingAuth ? "VALIDATING..." : "AUTHORIZE"}
+          </button>
+          <button
+            onClick={clearSavedAccessKey}
+            type="button"
+            className={`mt-2 w-full rounded border py-2 text-xs ${
+              loginDark
+                ? "border-red-400/40 text-red-300 hover:bg-red-500/10"
+                : "border-red-500/40 text-red-700 hover:bg-red-50"
+            }`}
+          >
+            CLEAR SAVED KEY
           </button>
         </section>
       </main>
@@ -686,7 +717,7 @@ export default function Home() {
               <div className="exec-action-group flex flex-wrap items-center gap-2">
                 <div className="mr-2 text-right">
                   <p className="text-[9px] tracking-[0.14em] text-emerald-300/65">ACCESS STATUS</p>
-                  <p className="text-xs normal-case text-emerald-300">● Authorized</p>
+                  <p className="text-xs normal-case text-emerald-300">Authorized</p>
                 </div>
                 <button onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))} className="exec-head-btn inline-flex items-center justify-center gap-1 rounded border border-emerald-400/40 px-2 py-1 text-[10px] hover:bg-emerald-500/20">
                   {isDark ? <Sun size={12} /> : <Moon size={12} />}
@@ -699,6 +730,14 @@ export default function Home() {
                   Log out
                 </button>
               </div>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[10px] tracking-[0.14em] text-emerald-300/80">
+              <span className="inline-flex items-center gap-1"><ShieldCheck size={12} />System Secure</span>
+              <span className="inline-flex items-center gap-1"><User size={12} />{accountName}</span>
+              <span className="inline-flex items-center gap-1"><Package size={12} />{accountPackage}</span>
+              <span className="inline-flex items-center gap-1"><CalendarClock size={12} />{formatDateTime(subscriptionExpiry)}</span>
+              <span className="inline-flex items-center gap-1"><Signal size={12} />XAUUSD</span>
+              <span className="inline-flex items-center gap-1"><Timer size={12} />{formatClock(sessionSeconds)}</span>
             </div>
           </header>
         )}
@@ -1103,13 +1142,3 @@ function Dist({ label, count, total }: { label: string; count: number; total: nu
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-

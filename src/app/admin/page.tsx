@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Subscriber = {
   id: string;
@@ -129,7 +129,7 @@ export default function AdminPage() {
 
   const headers = useMemo(() => ({ "x-admin-key": adminKey }), [adminKey]);
 
-  const loadAll = async () => {
+  const loadAll = useCallback(async () => {
     try {
       setStatus("Syncing admin data...");
       const [sRes, pRes, lRes, hRes] = await Promise.all([
@@ -162,12 +162,12 @@ export default function AdminPage() {
       const message = error instanceof Error ? error.message : "Failed syncing admin data.";
       setStatus(message);
     }
-  };
+  }, [headers]);
 
   useEffect(() => {
     if (!authorized || !adminKey) return;
     void loadAll();
-  }, [authorized, adminKey]);
+  }, [authorized, adminKey, loadAll]);
 
   useEffect(() => {
     if (typeof window !== "undefined") setOrigin(window.location.origin);
@@ -1103,4 +1103,3 @@ export default function AdminPage() {
     </main>
   );
 }
-

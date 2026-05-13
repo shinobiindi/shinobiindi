@@ -78,6 +78,8 @@ create table if not exists public.package_links (
   created_at timestamptz not null default now()
 );
 
+-- Register link flow setup is kept here so schema.sql remains the
+-- single source to copy into a fresh Supabase project.
 create table if not exists public.link_redemptions (
   id uuid primary key default gen_random_uuid(),
   package_link_id uuid not null references public.package_links(id) on delete cascade,

@@ -8,7 +8,7 @@ function toPublicRegisterError(message: string) {
     normalized.includes("schema cache") &&
     (normalized.includes("public.link_redemptions") || normalized.includes("public.package_links"))
   ) {
-    return "Registration database setup is incomplete. Run supabase/register-link-schema-fix.sql in the Supabase SQL Editor, then try again.";
+    return "Registration database setup is incomplete. Run supabase/schema.sql in the Supabase SQL Editor, then try again.";
   }
 
   return message;

@@ -13,7 +13,7 @@ function parsePackageDays(packageName: string | undefined) {
 function normalizePackageName(packageName: string | undefined) {
   if (!packageName) return "";
   const clean = packageName.trim();
-  if (/trial/i.test(clean)) return "TRIAL 3D";
+  if (/trial/i.test(clean)) return "Trial 3D";
   return clean;
 }
 

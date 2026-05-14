@@ -77,7 +77,7 @@ function formatAdminDate(value: string | null) {
 function normalizePackageName(packageName: string | null | undefined) {
   const clean = (packageName ?? "").trim();
   if (!clean) return "Unknown";
-  if (/trial/i.test(clean)) return "TRIAL 3D";
+  if (/trial/i.test(clean)) return "Trial 3D";
   const packageMatch = clean.match(/^package\s*(\d+)\s*d$/i);
   if (packageMatch) return `Package ${Number(packageMatch[1])}D`;
   return clean;
@@ -220,7 +220,7 @@ export default function AdminPage() {
   }, [logs, perfMode, perfStartMs, perfEndMs]);
 
   const packageOptions = useMemo(() => {
-    const names = new Set<string>(["Package 7D", "Package 15D", "Package 30D"]);
+    const names = new Set<string>(["Trial 3D", "Package 7D", "Package 15D", "Package 30D"]);
     for (const link of links) {
       const name = normalizePackageName(link.package_name);
       if (name) names.add(name);

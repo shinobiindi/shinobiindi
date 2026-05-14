@@ -21,7 +21,7 @@ function readDurationDays(row: PackageLinkRow, fallback = 7) {
 
 function normalizePackageName(rawName: string, durationDays: number) {
   if (/trial/i.test(rawName) || durationDays === 3) {
-    return "TRIAL 3D";
+    return "Trial 3D";
   }
   const clean = rawName.trim();
   if (/^package\s*\d+\s*d$/i.test(clean)) {
@@ -33,7 +33,7 @@ function normalizePackageName(rawName: string, durationDays: number) {
 
 function packageNameWithDuration(packageName: string, durationDays: number) {
   const normalized = normalizePackageName(packageName, durationDays);
-  if (normalized === "TRIAL 3D") return normalized;
+  if (normalized === "Trial 3D") return normalized;
   if (/(?:^|\D)\d{1,4}\s*d(?:ays?)?/i.test(normalized)) return normalized;
   return `${normalized} ${durationDays}D`;
 }
@@ -44,7 +44,7 @@ function normalizeLink(row: PackageLinkRow) {
   return {
     ...row,
     package_name: name,
-    duration_days: name === "TRIAL 3D" ? 3 : duration,
+    duration_days: name === "Trial 3D" ? 3 : duration,
   };
 }
 

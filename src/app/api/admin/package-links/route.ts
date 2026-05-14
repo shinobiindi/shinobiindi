@@ -19,15 +19,32 @@ function readDurationDays(row: PackageLinkRow, fallback = 7) {
   return fallback;
 }
 
+function normalizePackageName(rawName: string, durationDays: number) {
+  if (/trial/i.test(rawName) || durationDays === 3) {
+    return "TRIAL 3D";
+  }
+  const clean = rawName.trim();
+  if (/^package\s*\d+\s*d$/i.test(clean)) {
+    const match = clean.match(/(\d+)/);
+    return `Package ${Number(match?.[1] ?? durationDays)}D`;
+  }
+  return clean;
+}
+
 function packageNameWithDuration(packageName: string, durationDays: number) {
-  if (/(?:^|\D)\d{1,4}\s*d(?:ays?)?/i.test(packageName)) return packageName;
-  return `${packageName} ${durationDays}D`;
+  const normalized = normalizePackageName(packageName, durationDays);
+  if (normalized === "TRIAL 3D") return normalized;
+  if (/(?:^|\D)\d{1,4}\s*d(?:ays?)?/i.test(normalized)) return normalized;
+  return `${normalized} ${durationDays}D`;
 }
 
 function normalizeLink(row: PackageLinkRow) {
+  const duration = readDurationDays(row);
+  const name = normalizePackageName(String(row.package_name ?? ""), duration);
   return {
     ...row,
-    duration_days: readDurationDays(row),
+    package_name: name,
+    duration_days: name === "TRIAL 3D" ? 3 : duration,
   };
 }
 
@@ -55,10 +72,14 @@ export async function POST(req: Request) {
 
   const brandId = resolveBrandId(req);
   const body = (await req.json()) as { package_name?: string; duration_days?: number; agent_name?: string };
-  const duration = Number(body.duration_days ?? 0);
+  let duration = Number(body.duration_days ?? 0);
   const rawPackageName = body.package_name?.trim() ?? "";
   if (!rawPackageName || !duration || duration <= 0) {
     return NextResponse.json({ error: "package_name and duration_days are required" }, { status: 400 });
+  }
+
+  if (/trial/i.test(rawPackageName)) {
+    duration = 3;
   }
 
   const packageName = packageNameWithDuration(rawPackageName, Math.round(duration));

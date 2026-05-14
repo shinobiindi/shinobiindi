@@ -5,8 +5,16 @@ import { resolveBrandId } from "@/lib/brand-id";
 
 function parsePackageDays(packageName: string | undefined) {
   if (!packageName) return 0;
+  if (/trial/i.test(packageName)) return 3;
   const match = packageName.match(/(\d+)\s*D/i);
   return match ? Number(match[1]) : 0;
+}
+
+function normalizePackageName(packageName: string | undefined) {
+  if (!packageName) return "";
+  const clean = packageName.trim();
+  if (/trial/i.test(clean)) return "TRIAL 3D";
+  return clean;
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -31,7 +39,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (body.email !== undefined) patch.email = body.email.trim().toLowerCase();
   if (body.phone !== undefined) patch.phone = body.phone?.trim() || null;
   if (body.introducer !== undefined) patch.introducer = body.introducer?.trim() || null;
-  if (body.package_name !== undefined) patch.package_name = body.package_name;
+  if (body.package_name !== undefined) patch.package_name = normalizePackageName(body.package_name);
   if (body.status !== undefined) patch.status = body.status;
 
   const { data, error } = await admin

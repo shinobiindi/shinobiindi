@@ -568,8 +568,8 @@ export default function AdminPage() {
       r.mode,
       r.type,
       r.outcome.toUpperCase(),
-      r.net_pips.toFixed(1),
-      r.peak_pips === null ? "" : String(r.peak_pips),
+      Number(r.net_pips).toFixed(1),
+      r.peak_pips === null ? "" : Number(r.peak_pips).toFixed(1),
     ]);
     const escapeCsv = (value: string) => `"${value.replace(/"/g, '""')}"`;
     const content = [header, ...csvRows]
@@ -966,7 +966,7 @@ export default function AdminPage() {
                       <td className="px-3 py-2">{l.type}</td>
                       <td className="px-3 py-2">{l.outcome.toUpperCase()}</td>
                       <td className="px-3 py-2">{Number(l.net_pips).toFixed(1)}</td>
-                      <td className="px-3 py-2">{l.peak_pips === null ? "-" : String(l.peak_pips)}</td>
+                      <td className="px-3 py-2">{l.peak_pips === null ? "-" : Number(l.peak_pips).toFixed(1)}</td>
                       <td className="px-3 py-2 text-slate-400">-</td>
                     </tr>
                   );

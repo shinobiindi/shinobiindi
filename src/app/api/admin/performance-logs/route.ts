@@ -87,14 +87,22 @@ function toSecEpoch(iso: string): number {
   return Math.floor(new Date(iso).getTime() / 1000);
 }
 
+function roundPips(value: number | null, decimals = 1) {
+  if (value === null || !Number.isFinite(value)) return null;
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
 function normalizePerf(row: PerfRow) {
   const net = row.net_pips ?? row.points ?? 0;
   const peak = row.peak_pips ?? row.points ?? null;
+  const netValue = Number(net);
+  const peakValue = peak === null ? null : Number(peak);
   return {
     ...row,
     type: row.type ?? row.action ?? "buy",
-    net_pips: Number(net),
-    peak_pips: peak === null ? null : Number(peak),
+    net_pips: roundPips(Number.isFinite(netValue) ? netValue : 0) ?? 0,
+    peak_pips: roundPips(peakValue),
     mode: row.mode ?? "scalping",
   };
 }

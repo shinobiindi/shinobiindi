@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { AlertTriangle, BarChart3, CalendarClock, Clipboard, Eye, EyeOff, Moon, Package, ShieldCheck, Signal, Sun, Timer, User } from "lucide-react";
 import { getSupabaseClient } from "@/lib/supabase";
+import { resolveBrandId } from "@/lib/brand-id";
 import type { PerformanceLog, Signal as TradingSignal, SignalMode } from "@/lib/types";
 
 type Tab = "signal" | "performance";
@@ -35,6 +36,64 @@ function pipGain(signal: TradingSignal) {
     ? signal.live_price - signal.entry_target
     : signal.entry_target - signal.live_price;
   return points * GOLD_PIPS_MULTIPLIER;
+}
+
+function readNumber(value: unknown, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function normalizeSignal(row: Record<string, unknown>): TradingSignal {
+  const entry = readNumber(row.entry_target ?? row.entry);
+  return {
+    ...(row as Partial<TradingSignal>),
+    id: String(row.id ?? `signal-${Date.now()}`),
+    created_at: String(row.created_at ?? new Date().toISOString()),
+    updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
+    mode: row.mode === "intraday" ? "intraday" : "scalping",
+    type: row.type === "sell" || row.action === "sell" ? "sell" : "buy",
+    pair: String(row.pair ?? "XAUUSD"),
+    entry_target: entry,
+    live_price: readNumber(row.live_price, entry),
+    sl: readNumber(row.sl ?? row.stop_loss),
+    tp1: readNumber(row.tp1 ?? row.take_profit_1),
+    tp2: readNumber(row.tp2 ?? row.take_profit_2),
+    tp3: row.tp3 === null || row.take_profit_3 === null ? null : readNumber(row.tp3 ?? row.take_profit_3),
+    max_floating_pips: row.max_floating_pips === null || row.max_floating_pips === undefined ? null : readNumber(row.max_floating_pips),
+    status: row.status === "active" ? "active" : "closed",
+  };
+}
+
+function normalizePerformanceLog(row: Record<string, unknown>): PerformanceLog {
+  const peak = row.peak_pips ?? row.points ?? null;
+  return {
+    ...(row as Partial<PerformanceLog>),
+    id: String(row.id ?? `performance-${Date.now()}`),
+    created_at: String(row.created_at ?? new Date().toISOString()),
+    mode: row.mode === "intraday" ? "intraday" : "scalping",
+    type: row.type === "sell" || row.action === "sell" ? "sell" : "buy",
+    outcome: row.outcome === "tp1" || row.outcome === "tp2" || row.outcome === "tp3" || row.outcome === "sl" || row.outcome === "be" ? row.outcome : "be",
+    net_pips: readNumber(row.net_pips ?? row.points),
+    peak_pips: peak === null || peak === undefined ? null : readNumber(peak),
+  };
+}
+
+function performanceMinuteKey(item: PerformanceLog) {
+  const d = new Date(item.created_at);
+  const minute = Number.isNaN(d.getTime()) ? item.created_at.slice(0, 16) : d.toISOString().slice(0, 16);
+  return `${minute}|${item.mode}|${item.type}|${item.outcome}`;
+}
+
+function dedupePerformanceItems(items: PerformanceLog[]) {
+  const seen = new Set<string>();
+  const out: PerformanceLog[] = [];
+  for (const item of items) {
+    const key = performanceMinuteKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function formatClock(totalSeconds: number) {
@@ -69,6 +128,7 @@ async function getFingerprint(): Promise<string> {
 
 export default function Home() {
   const supabase = getSupabaseClient();
+  const brandId = useMemo(() => resolveBrandId(), []);
   const [authorized, setAuthorized] = useState(false);
   const [accessKey, setAccessKey] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
@@ -114,22 +174,35 @@ export default function Home() {
   }, [notificationPermission]);
 
   const fetchDashboardData = useCallback(async (sb: NonNullable<ReturnType<typeof getSupabaseClient>>) => {
-    const [signalRes, serverLogRes] = await Promise.all([
-      sb.from("signals").select("*").eq("pair", "XAUUSD").order("created_at", { ascending: false }).limit(50),
+    const [serverSignalRes, serverLogRes] = await Promise.all([
+      fetch("/api/signals?pair=XAUUSD&limit=50", { cache: "no-store" }),
       fetch("/api/performance-logs?limit=300", { cache: "no-store" }),
     ]);
 
-    if (!signalRes.error && signalRes.data) setSignals(signalRes.data as TradingSignal[]);
+    try {
+      if (serverSignalRes.ok) {
+        const json = (await serverSignalRes.json()) as { data?: TradingSignal[] };
+        if (Array.isArray(json.data)) {
+          setSignals(json.data.map((row) => normalizeSignal(row as unknown as Record<string, unknown>)));
+        }
+      }
+    } catch {
+      // keep existing signals when server fetch fails
+    }
+
     try {
       if (serverLogRes.ok) {
         const json = (await serverLogRes.json()) as { data?: PerformanceLog[] };
-        if (Array.isArray(json.data)) setLogs(json.data);
-      }
-    } catch {
-      // keep existing logs when server fetch fails
+          if (Array.isArray(json.data)) {
+            const normalized = json.data.map((row) => normalizePerformanceLog(row as unknown as Record<string, unknown>));
+            setLogs(dedupePerformanceItems(normalized));
+          }
+        }
+      } catch {
+        // keep existing logs when server fetch fails
     }
     setLastSync(new Date().toLocaleTimeString());
-  }, []);
+  }, [brandId]);
 
   useEffect(() => {
     const saved = typeof window !== "undefined" ? window.localStorage.getItem("shinobi-indi-theme") : null;
@@ -257,7 +330,8 @@ export default function Home() {
 
     const handleSignalEvent = (payload: { eventType: "INSERT" | "UPDATE" | "DELETE"; new: Record<string, unknown> }) => {
       if (payload.eventType === "DELETE") return;
-      const next = payload.new as TradingSignal;
+      if (payload.new.brand_id && String(payload.new.brand_id) !== brandId) return;
+      const next = normalizeSignal(payload.new);
       setSignals((prev) => [next, ...prev.filter((s) => s.id !== next.id)].slice(0, 50));
 
       if (next.status === "active") {
@@ -277,8 +351,9 @@ export default function Home() {
 
     const handlePerformanceEvent = (payload: { eventType: "INSERT" | "UPDATE" | "DELETE"; new: Record<string, unknown> }) => {
       if (payload.eventType === "DELETE") return;
-      const next = payload.new as PerformanceLog;
-      setLogs((prev) => [next, ...prev.filter((s) => s.id !== next.id)].slice(0, 200));
+      if (payload.new.brand_id && String(payload.new.brand_id) !== brandId) return;
+      const next = normalizePerformanceLog(payload.new);
+      setLogs((prev) => dedupePerformanceItems([next, ...prev.filter((s) => s.id !== next.id)]).slice(0, 200));
 
       const upperOutcome = next.outcome.toUpperCase();
       const isTp = next.outcome === "tp1" || next.outcome === "tp2" || next.outcome === "tp3";
@@ -300,16 +375,16 @@ export default function Home() {
 
     const channel = sb
       .channel("shinobi-indi-stream")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "signals" }, (payload) =>
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "signals", filter: `brand_id=eq.${brandId}` }, (payload) =>
         handleSignalEvent(payload as unknown as { eventType: "INSERT" | "UPDATE" | "DELETE"; new: Record<string, unknown> }),
       )
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "signals" }, (payload) =>
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "signals", filter: `brand_id=eq.${brandId}` }, (payload) =>
         handleSignalEvent(payload as unknown as { eventType: "INSERT" | "UPDATE" | "DELETE"; new: Record<string, unknown> }),
       )
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "performance_logs" }, (payload) =>
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "performance_logs", filter: `brand_id=eq.${brandId}` }, (payload) =>
         handlePerformanceEvent(payload as unknown as { eventType: "INSERT" | "UPDATE" | "DELETE"; new: Record<string, unknown> }),
       )
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "performance_logs" }, (payload) =>
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "performance_logs", filter: `brand_id=eq.${brandId}` }, (payload) =>
         handlePerformanceEvent(payload as unknown as { eventType: "INSERT" | "UPDATE" | "DELETE"; new: Record<string, unknown> }),
       )
       .subscribe();
@@ -317,7 +392,7 @@ export default function Home() {
     return () => {
       void sb.removeChannel(channel);
     };
-  }, [authorized, supabase, fetchDashboardData, pushLiveAlert]);
+  }, [authorized, supabase, fetchDashboardData, pushLiveAlert, brandId]);
 
   useEffect(() => {
     if (!authorized || !supabase) return;

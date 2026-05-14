@@ -63,6 +63,20 @@ function normalized(value: unknown): string | null {
   return v.length ? v : null;
 }
 
+function resolveBrandId(request: NextRequest): string {
+  const fromEnv = (process.env.BRAND_ID ?? process.env.NEXT_PUBLIC_BRAND_ID ?? "").trim().toLowerCase();
+  if (fromEnv) return fromEnv;
+
+  const host = (request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "").trim().toLowerCase();
+  if (!host) return "";
+
+  if (host.includes("kafra")) return "kafra";
+  if (host.includes("sarjan")) return "sarjan";
+  if (host.includes("richjoker")) return "richjoker";
+  if (host.includes("shinobi")) return "shinobi";
+  return "";
+}
+
 function inferHitOutcome(args: {
   type: "buy" | "sell";
   livePrice: number;
@@ -198,6 +212,10 @@ export async function POST(req: NextRequest) {
   if (!admin) {
     return NextResponse.json({ error: "Server missing Supabase admin env vars" }, { status: 500 });
   }
+  const brandId = resolveBrandId(req);
+  if (!brandId) {
+    return NextResponse.json({ error: "Server missing BRAND_ID / NEXT_PUBLIC_BRAND_ID" }, { status: 500 });
+  }
 
   if (event === "price_update") {
     if (livePrice === null) {
@@ -206,7 +224,8 @@ export async function POST(req: NextRequest) {
 
     const { data: current, error: currentError } = await admin
       .from("signals")
-      .select("id, mode, type, entry_target, tp1, tp2, tp3, sl, max_floating_pips")
+      .select("id, mode, type:action, entry_target:entry, tp1:take_profit_1, tp2:take_profit_2, tp3:take_profit_3, sl:stop_loss, max_floating_pips")
+      .eq("brand_id", brandId)
       .eq("pair", pair)
       .eq("mode", mode)
       .eq("status", "active")
@@ -269,9 +288,14 @@ export async function POST(req: NextRequest) {
       const { data: logData, error: logError } = await admin
         .from("performance_logs")
         .insert({
+          brand_id: brandId,
+          signal_id: current.id,
+          pair,
           mode: current.mode,
-          type: current.type,
+          action: current.type,
           outcome: classifiedOutcome,
+          points: historyPips,
+          price: livePrice,
           net_pips: historyPips,
           peak_pips: peakPips,
         })
@@ -280,7 +304,7 @@ export async function POST(req: NextRequest) {
       if (logError) return NextResponse.json({ error: logError.message }, { status: 500 });
 
       await sendTelegramTradingAlert([
-        "📊 *SHINOBI INDI Closed*",
+        "*SHINOBI INDI Closed*",
         `*Mode:* ${current.mode.toUpperCase()}`,
         `*Pair:* ${pair}`,
         `*Type:* ${current.type.toUpperCase()}`,
@@ -326,7 +350,8 @@ export async function POST(req: NextRequest) {
 
     const { data: current, error: currentError } = await admin
       .from("signals")
-      .select("id, type, entry_target, max_floating_pips, sl, tp1, tp2, tp3")
+      .select("id, type:action, entry_target:entry, max_floating_pips, sl:stop_loss, tp1:take_profit_1, tp2:take_profit_2, tp3:take_profit_3")
+      .eq("brand_id", brandId)
       .eq("pair", pair)
       .eq("mode", mode)
       .eq("status", "active")
@@ -367,9 +392,14 @@ export async function POST(req: NextRequest) {
     const { data: logData, error: logError } = await admin
       .from("performance_logs")
       .insert({
+        brand_id: brandId,
+        signal_id: current.id,
+        pair,
         mode,
-        type: current.type,
+        action: current.type,
         outcome: classifiedOutcome,
+        points: historyPips,
+        price: closePrice,
         net_pips: historyPips,
         peak_pips: peakPips,
       })
@@ -378,7 +408,7 @@ export async function POST(req: NextRequest) {
     if (logError) return NextResponse.json({ error: logError.message }, { status: 500 });
 
     await sendTelegramTradingAlert([
-      "📊 *SHINOBI INDI Closed*",
+      "*SHINOBI INDI Closed*",
       `*Mode:* ${mode.toUpperCase()}`,
       `*Pair:* ${pair}`,
       `*Type:* ${current.type.toUpperCase()}`,
@@ -409,10 +439,11 @@ export async function POST(req: NextRequest) {
     const cooldownFromIso = new Date(Date.now() - Math.max(10, SIGNAL_DUPLICATE_COOLDOWN_SECONDS) * 1000).toISOString();
     const { data: maybeDup, error: dupError } = await admin
       .from("signals")
-      .select("id, entry_target, created_at, status")
+      .select("id, entry_target:entry, created_at, status")
+      .eq("brand_id", brandId)
       .eq("pair", pair)
       .eq("mode", mode)
-      .eq("type", type)
+      .eq("action", type)
       .eq("status", "active")
       .gte("created_at", cooldownFromIso)
       .order("created_at", { ascending: false })
@@ -439,7 +470,8 @@ export async function POST(req: NextRequest) {
   if (event === "signal") {
     const { data: previous } = await admin
       .from("signals")
-      .select("id, type, entry_target, live_price, max_floating_pips, created_at, sl, tp1, tp2, tp3")
+      .select("id, type:action, entry_target:entry, live_price, max_floating_pips, created_at, sl:stop_loss, tp1:take_profit_1, tp2:take_profit_2, tp3:take_profit_3")
+      .eq("brand_id", brandId)
       .eq("pair", pair)
       .eq("mode", mode)
       .eq("status", "active")
@@ -478,9 +510,14 @@ export async function POST(req: NextRequest) {
       });
 
       await admin.from("performance_logs").insert({
+        brand_id: brandId,
+        signal_id: previous.id,
+        pair,
         mode,
-        type: previous.type,
+        action: previous.type,
         outcome,
+        points: historyPips,
+        price: closePrice,
         net_pips: historyPips,
         peak_pips: peakPips,
       });
@@ -516,15 +553,16 @@ export async function POST(req: NextRequest) {
   const { data, error } = await admin
     .from("signals")
     .insert({
+      brand_id: brandId,
       pair,
       mode,
-      type,
-      entry_target: entryTarget,
+      action: type,
+      entry: entryTarget,
       live_price: livePrice,
-      sl,
-      tp1,
-      tp2,
-      tp3,
+      stop_loss: sl,
+      take_profit_1: tp1,
+      take_profit_2: tp2,
+      take_profit_3: tp3,
       max_floating_pips: 0,
       status: finalStatus,
       updated_at: new Date().toISOString(),
@@ -537,7 +575,7 @@ export async function POST(req: NextRequest) {
   }
 
   await sendTelegramTradingAlert([
-    "🚨 *New SHINOBI INDI*",
+    "*New SHINOBI INDI*",
     `*Mode:* ${mode.toUpperCase()}`,
     `*Pair:* ${pair}`,
     `*Type:* ${type.toUpperCase()}`,
@@ -562,9 +600,14 @@ export async function POST(req: NextRequest) {
     const { data: logData, error: logError } = await admin
       .from("performance_logs")
       .insert({
+        brand_id: brandId,
+        signal_id: data.id,
+        pair,
         mode,
-        type,
+        action: type,
         outcome: immediateOutcome,
+        points: historyPips,
+        price: livePrice,
         net_pips: historyPips,
         peak_pips: peakPips,
       })
@@ -576,7 +619,7 @@ export async function POST(req: NextRequest) {
     }
 
     await sendTelegramTradingAlert([
-      "📊 *SHINOBI INDI Closed*",
+      "*SHINOBI INDI Closed*",
       `*Mode:* ${mode.toUpperCase()}`,
       `*Pair:* ${pair}`,
       `*Type:* ${type.toUpperCase()}`,
@@ -597,3 +640,5 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ ok: true, signal_id: data.id, created_at: data.created_at });
 }
+
+

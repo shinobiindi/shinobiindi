@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import { resolveBrandId } from "@/lib/brand-id";
 
 type AccessKeySessionRow = {
   id: string;
@@ -25,6 +26,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid request body.", code: "bad_request" }, { status: 400 });
   }
 
+  const brandId = resolveBrandId(req);
   const payload = body as { accessKeyId?: unknown; sessionToken?: unknown };
   const accessKeyId = readText(payload.accessKeyId);
   const sessionToken = readText(payload.sessionToken);
@@ -36,6 +38,7 @@ export async function POST(req: Request) {
   const { data, error } = await admin
     .from("access_keys")
     .select("id,expired_at,is_active,session_token")
+    .eq("brand_id", brandId)
     .eq("id", accessKeyId)
     .maybeSingle();
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import { resolveBrandId } from "@/lib/brand-id";
 
 type AccessKeyRow = {
   id: string;
@@ -30,6 +31,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
   }
 
+  const brandId = resolveBrandId(req);
   const payload = body as { key?: unknown; fingerprint?: unknown };
   const key = readText(payload.key);
   const fingerprint = readText(payload.fingerprint);
@@ -41,6 +43,7 @@ export async function POST(req: Request) {
   const { data, error } = await admin
     .from("access_keys")
     .select("id,label,expired_at,is_active,fingerprint_id")
+    .eq("brand_id", brandId)
     .eq("key", key)
     .maybeSingle();
 
@@ -59,9 +62,13 @@ export async function POST(req: Request) {
 
   if (row.fingerprint_id && row.fingerprint_id !== fingerprint) {
     await admin.from("security_alerts").insert({
+      brand_id: brandId,
       access_key_id: row.id,
+      key,
       reason: "session_takeover",
-      detected_fingerprint: fingerprint,
+      fingerprint_id: fingerprint,
+      user_agent: req.headers.get("user-agent"),
+      ip_address: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
     });
   }
 
@@ -73,6 +80,7 @@ export async function POST(req: Request) {
       session_token: sessionToken,
       last_login_at: new Date().toISOString(),
     })
+    .eq("brand_id", brandId)
     .eq("id", row.id);
 
   if (updateError) {

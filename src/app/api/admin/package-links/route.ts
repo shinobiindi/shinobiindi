@@ -2,15 +2,50 @@ import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { isAdminAuthorized } from "@/lib/admin-auth";
 import { generateToken } from "@/lib/keygen";
+import { resolveBrandId } from "@/lib/brand-id";
+
+type PackageLinkRow = Record<string, unknown> & {
+  package_name?: string | null;
+  duration_days?: number | string | null;
+};
+
+function readDurationDays(row: PackageLinkRow, fallback = 7) {
+  const explicit = Number(row.duration_days);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.round(explicit);
+
+  const match = String(row.package_name ?? "").match(/(?:^|\D)(\d{1,4})\s*d(?:ays?)?/i);
+  if (match) return Number(match[1]);
+
+  return fallback;
+}
+
+function packageNameWithDuration(packageName: string, durationDays: number) {
+  if (/(?:^|\D)\d{1,4}\s*d(?:ays?)?/i.test(packageName)) return packageName;
+  return `${packageName} ${durationDays}D`;
+}
+
+function normalizeLink(row: PackageLinkRow) {
+  return {
+    ...row,
+    duration_days: readDurationDays(row),
+  };
+}
 
 export async function GET(req: Request) {
   if (!isAdminAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ error: "Missing admin env" }, { status: 500 });
 
-  const { data, error } = await admin.from("package_links").select("*").order("created_at", { ascending: false }).limit(100);
+  const brandId = resolveBrandId(req);
+  const { data, error } = await admin
+    .from("package_links")
+    .select("*")
+    .eq("brand_id", brandId)
+    .order("created_at", { ascending: false })
+    .limit(100);
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true, data });
+  return NextResponse.json({ ok: true, data: (data ?? []).map((row) => normalizeLink(row as PackageLinkRow)) });
 }
 
 export async function POST(req: Request) {
@@ -18,28 +53,31 @@ export async function POST(req: Request) {
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ error: "Missing admin env" }, { status: 500 });
 
+  const brandId = resolveBrandId(req);
   const body = (await req.json()) as { package_name?: string; duration_days?: number; agent_name?: string };
   const duration = Number(body.duration_days ?? 0);
-  if (!body.package_name || !duration || duration <= 0) {
+  const rawPackageName = body.package_name?.trim() ?? "";
+  if (!rawPackageName || !duration || duration <= 0) {
     return NextResponse.json({ error: "package_name and duration_days are required" }, { status: 400 });
   }
 
+  const packageName = packageNameWithDuration(rawPackageName, Math.round(duration));
   const MAX_RETRIES = 12;
   for (let i = 0; i < MAX_RETRIES; i += 1) {
     const token = generateToken(4);
     const { data, error } = await admin
       .from("package_links")
       .insert({
+        brand_id: brandId,
         token,
-        package_name: body.package_name,
-        duration_days: duration,
-        agent_name: body.agent_name ?? null,
+        package_name: packageName,
+        agent_name: body.agent_name?.trim() || null,
         is_active: true,
       })
       .select("*")
       .single();
 
-    if (!error) return NextResponse.json({ ok: true, data });
+    if (!error) return NextResponse.json({ ok: true, data: normalizeLink(data as PackageLinkRow) });
     if (error.code !== "23505") return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

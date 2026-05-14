@@ -1,13 +1,37 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { isAdminAuthorized } from "@/lib/admin-auth";
+import { resolveBrandId } from "@/lib/brand-id";
+
+type PackageLinkRow = Record<string, unknown> & {
+  package_name?: string | null;
+  duration_days?: number | string | null;
+};
+
+function readDurationDays(row: PackageLinkRow, fallback = 7) {
+  const explicit = Number(row.duration_days);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.round(explicit);
+
+  const match = String(row.package_name ?? "").match(/(?:^|\D)(\d{1,4})\s*d(?:ays?)?/i);
+  if (match) return Number(match[1]);
+
+  return fallback;
+}
+
+function normalizeLink(row: PackageLinkRow) {
+  return {
+    ...row,
+    duration_days: readDurationDays(row),
+  };
+}
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!isAdminAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ error: "Missing admin env" }, { status: 500 });
-  const { id } = await params;
 
+  const brandId = resolveBrandId(req);
+  const { id } = await params;
   const body = (await req.json()) as { is_active?: boolean; token?: string; agent_name?: string | null };
 
   const patch: { is_active?: boolean; token?: string; agent_name?: string | null } = {};
@@ -25,18 +49,27 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ error: "Provide at least one field: is_active, token, or agent_name" }, { status: 400 });
   }
 
-  const { data, error } = await admin.from("package_links").update(patch).eq("id", id).select("*").single();
+  const { data, error } = await admin
+    .from("package_links")
+    .update(patch)
+    .eq("brand_id", brandId)
+    .eq("id", id)
+    .select("*")
+    .single();
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true, data });
+  return NextResponse.json({ ok: true, data: normalizeLink(data as PackageLinkRow) });
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!isAdminAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ error: "Missing admin env" }, { status: 500 });
-  const { id } = await params;
 
-  const { error } = await admin.from("package_links").delete().eq("id", id);
+  const brandId = resolveBrandId(req);
+  const { id } = await params;
+  const { error } = await admin.from("package_links").delete().eq("brand_id", brandId).eq("id", id);
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
 }

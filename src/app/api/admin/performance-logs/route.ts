@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { isAdminAuthorized } from "@/lib/admin-auth";
+import { resolveBrandId } from "@/lib/brand-id";
 
 type CsvPerfRecord = {
   createdAtIso: string;
@@ -9,6 +10,20 @@ type CsvPerfRecord = {
   outcome: "tp1" | "tp2" | "tp3" | "be" | "sl";
   netPips: number;
   peakPips: number | null;
+};
+
+type PerfRow = {
+  id: string;
+  brand_id?: string;
+  mode?: "scalping" | "intraday" | null;
+  action?: "buy" | "sell" | null;
+  type?: "buy" | "sell" | null;
+  outcome: "tp1" | "tp2" | "tp3" | "be" | "sl";
+  points?: number | string | null;
+  net_pips?: number | string | null;
+  peak_pips?: number | string | null;
+  price?: number | string | null;
+  created_at: string;
 };
 
 function parseCsvLine(line: string): string[] {
@@ -43,10 +58,6 @@ function parseAdminTimeToIso(raw: string): string | null {
   const text = raw.trim();
   if (!text) return null;
 
-  // Always prefer en-GB export style first to avoid US MM/DD ambiguity.
-  // Supports:
-  // - DD/MM/YY, HH:mm:ss
-  // - DD/MM/YYYY, HH:mm:ss
   const m = text.match(/^(\d{2})\/(\d{2})\/(\d{2}|\d{4}),\s*(\d{2}):(\d{2}):(\d{2})$/);
   if (m) {
     const dd = Number(m[1]);
@@ -60,13 +71,11 @@ function parseAdminTimeToIso(raw: string): string | null {
       ? yyOrYyyy
       : (yyOrYyyy >= 70 ? 1900 + yyOrYyyy : 2000 + yyOrYyyy);
 
-    // CSV time is Asia/Kuala_Lumpur (+08:00), convert to UTC ISO.
     const utcMs = Date.UTC(fullYear, mm - 1, dd, hh - 8, mi, ss);
     if (Number.isNaN(utcMs)) return null;
     return new Date(utcMs).toISOString();
   }
 
-  // Fallback for true ISO-style timestamps only.
   const isoLike = text.match(/^\d{4}-\d{2}-\d{2}T/);
   if (!isoLike) return null;
   const isoTry = new Date(text);
@@ -78,22 +87,77 @@ function toSecEpoch(iso: string): number {
   return Math.floor(new Date(iso).getTime() / 1000);
 }
 
+function normalizePerf(row: PerfRow) {
+  const net = row.net_pips ?? row.points ?? 0;
+  const peak = row.peak_pips ?? row.points ?? null;
+  return {
+    ...row,
+    type: row.type ?? row.action ?? "buy",
+    net_pips: Number(net),
+    peak_pips: peak === null ? null : Number(peak),
+    mode: row.mode ?? "scalping",
+  };
+}
+
+function toMinuteBucket(value: string) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value.slice(0, 16);
+  return d.toISOString().slice(0, 16);
+}
+
+function dedupePerfRows(rows: ReturnType<typeof normalizePerf>[]) {
+  const seen = new Set<string>();
+  const out: ReturnType<typeof normalizePerf>[] = [];
+
+  for (const row of rows) {
+    const key = [
+      toMinuteBucket(row.created_at),
+      row.mode,
+      row.type,
+      row.outcome,
+    ].join("|");
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+
+  return out;
+}
+
+const PERFORMANCE_EDIT_ENABLED = false;
+
 export async function GET(req: Request) {
   if (!isAdminAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ error: "Missing admin env" }, { status: 500 });
 
-  const { data, error } = await admin.from("performance_logs").select("*").order("created_at", { ascending: false }).limit(300);
+  const brandId = resolveBrandId(req);
+  const limit = 300;
+  const queryLimit = 1200;
+
+  const { data, error } = await admin
+    .from("performance_logs")
+    .select("*")
+    .eq("brand_id", brandId)
+    .order("created_at", { ascending: false })
+    .limit(queryLimit);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  return NextResponse.json({ ok: true, data });
+  const normalized = (data ?? []).map((row) => normalizePerf(row as PerfRow));
+  const deduped = dedupePerfRows(normalized).slice(0, limit);
+  return NextResponse.json({ ok: true, data: deduped });
 }
 
 export async function POST(req: Request) {
   if (!isAdminAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!PERFORMANCE_EDIT_ENABLED) {
+    return NextResponse.json({ error: "Performance editing is managed in HQ for this brand." }, { status: 403 });
+  }
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ error: "Missing admin env" }, { status: 500 });
 
+  const brandId = resolveBrandId(req);
   const body = (await req.json()) as { csv?: string };
   const csv = typeof body.csv === "string" ? body.csv : "";
   if (!csv.trim()) {
@@ -112,9 +176,9 @@ export async function POST(req: Request) {
   const header = parseCsvLine(lines[0]).map((x) => x.toLowerCase());
   const idxTime = header.findIndex((h) => h === "time" || h === "created_at" || h === "timestamp");
   const idxMode = header.findIndex((h) => h === "mode");
-  const idxType = header.findIndex((h) => h === "type");
+  const idxType = header.findIndex((h) => h === "type" || h === "action");
   const idxOutcome = header.findIndex((h) => h === "outcome");
-  const idxNet = header.findIndex((h) => h === "net pips" || h === "net_pips");
+  const idxNet = header.findIndex((h) => h === "net pips" || h === "net_pips" || h === "points");
   const idxPeak = header.findIndex((h) => h === "peak pips" || h === "peak_pips");
 
   if ([idxTime, idxMode, idxType, idxOutcome, idxNet].some((i) => i < 0)) {
@@ -163,16 +227,18 @@ export async function POST(req: Request) {
 
   const { data: existing, error: existingError } = await admin
     .from("performance_logs")
-    .select("id,created_at,mode,type")
+    .select("id,created_at,mode,type:action")
+    .eq("brand_id", brandId)
     .order("created_at", { ascending: false })
     .limit(5000);
   if (existingError) return NextResponse.json({ error: existingError.message }, { status: 500 });
 
   const byKey = new Map<string, Array<{ id: string; used: boolean }>>();
   for (const row of existing ?? []) {
-    const k = `${row.mode}|${row.type}|${toSecEpoch(row.created_at)}`;
+    const r = row as { id: string; created_at: string; mode: string | null; type: string | null };
+    const k = `${r.mode ?? "scalping"}|${r.type ?? "buy"}|${toSecEpoch(r.created_at)}`;
     const arr = byKey.get(k) ?? [];
-    arr.push({ id: row.id, used: false });
+    arr.push({ id: r.id, used: false });
     byKey.set(k, arr);
   }
 
@@ -189,12 +255,14 @@ export async function POST(req: Request) {
         .from("performance_logs")
         .update({
           mode: row.mode,
-          type: row.type,
+          action: row.type,
           outcome: row.outcome,
+          points: row.netPips,
           net_pips: row.netPips,
           peak_pips: row.peakPips,
           created_at: row.createdAtIso,
         })
+        .eq("brand_id", brandId)
         .eq("id", candidate.id);
       if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
       candidate.used = true;
@@ -203,9 +271,12 @@ export async function POST(req: Request) {
     }
 
     const { error: insErr } = await admin.from("performance_logs").insert({
+      brand_id: brandId,
+      pair: "XAUUSD",
       mode: row.mode,
-      type: row.type,
+      action: row.type,
       outcome: row.outcome,
+      points: row.netPips,
       net_pips: row.netPips,
       peak_pips: row.peakPips,
       created_at: row.createdAtIso,
@@ -219,9 +290,13 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   if (!isAdminAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!PERFORMANCE_EDIT_ENABLED) {
+    return NextResponse.json({ error: "Performance editing is managed in HQ for this brand." }, { status: 403 });
+  }
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ error: "Missing admin env" }, { status: 500 });
 
+  const brandId = resolveBrandId(req);
   const body = (await req.json()) as { ids?: string[] };
   const ids = Array.isArray(body.ids) ? body.ids.filter((id) => typeof id === "string" && id.length > 0) : [];
 
@@ -229,7 +304,7 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "ids is required" }, { status: 400 });
   }
 
-  const { error } = await admin.from("performance_logs").delete().in("id", ids);
+  const { error } = await admin.from("performance_logs").delete().eq("brand_id", brandId).in("id", ids);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   return NextResponse.json({ ok: true, deleted: ids.length });

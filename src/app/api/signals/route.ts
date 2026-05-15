@@ -71,6 +71,8 @@ export async function GET(req: NextRequest) {
     .eq("brand_id", brandId)
     .eq("pair", pair)
     .eq("status", "active")
+    .in("mode", ["scalping", "intraday"])
+    .not("live_price", "is", null)
     .order("created_at", { ascending: false })
     .limit(limit);
 

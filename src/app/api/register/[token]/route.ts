@@ -14,6 +14,7 @@ type PackageLinkRow = Record<string, unknown> & {
   redemptions_count?: number | string | null;
   click_count?: number | string | null;
 };
+type AdminClient = NonNullable<ReturnType<typeof getSupabaseAdmin>>;
 
 function toPublicRegisterError(message: string) {
   const normalized = message.toLowerCase();
@@ -68,6 +69,7 @@ function isLinkUnavailable(link: PackageLinkRow) {
 }
 
 async function sendTelegramRegisterAlert(payload: {
+  admin: AdminClient;
   brandId: string;
   name: string;
   email: string;
@@ -79,8 +81,30 @@ async function sendTelegramRegisterAlert(payload: {
   linkToken: string;
   isExistingSubscriber: boolean;
 }) {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+  let botToken = process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
+  let chatId = process.env.TELEGRAM_CHAT_ID?.trim() ?? "";
+
+  try {
+    const { data } = await payload.admin
+      .from("telegram_bots")
+      .select("bot_token_secret_ref, channel_id, is_active")
+      .eq("brand_id", payload.brandId)
+      .eq("bot_name", "registration_alert")
+      .maybeSingle();
+
+    if (data?.is_active !== false) {
+      const dbToken =
+        typeof data?.bot_token_secret_ref === "string" ? data.bot_token_secret_ref.trim() : "";
+      const dbChatId = typeof data?.channel_id === "string" ? data.channel_id.trim() : "";
+      if (dbToken && dbChatId) {
+        botToken = dbToken;
+        chatId = dbChatId;
+      }
+    }
+  } catch {
+    // Fallback to env token/chat id if config read fails.
+  }
+
   if (!botToken || !chatId) return;
 
   const message = [
@@ -352,6 +376,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     .eq("id", link.id);
 
   await sendTelegramRegisterAlert({
+    admin,
     brandId,
     name: normalizedName,
     email: normalizedEmail,

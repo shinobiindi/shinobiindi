@@ -21,6 +21,8 @@ type SignalRow = {
 };
 
 function asNumber(value: unknown, fallback = 0) {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "string" && value.trim().length === 0) return fallback;
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 }
@@ -68,6 +70,7 @@ export async function GET(req: NextRequest) {
     )
     .eq("brand_id", brandId)
     .eq("pair", pair)
+    .eq("status", "active")
     .order("created_at", { ascending: false })
     .limit(limit);
 

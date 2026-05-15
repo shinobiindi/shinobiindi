@@ -26,7 +26,7 @@ const montserrat = Montserrat({
 export const metadata: Metadata = {
   title: "SHINOBI INDI",
   description: "Discipline. Precision. Profit.",
-  metadataBase: new URL("https://shinobiindi.ezos.my"),
+  metadataBase: new URL("https://shinobi.ezos.my"),
   icons: {
     icon: [
       { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
@@ -40,13 +40,13 @@ export const metadata: Metadata = {
   openGraph: {
     title: "SHINOBI INDI",
     description: "Discipline. Precision. Profit.",
-    url: "https://shinobiindi.ezos.my",
+    url: "https://shinobi.ezos.my",
     siteName: "SHINOBI INDI",
     images: [
       {
-        url: "/opengraph-image.png",
+        url: "/shinobi-logo.png",
         width: 1200,
-        height: 630,
+        height: 1200,
         alt: "SHINOBI INDI | Discipline. Precision. Profit.",
       },
     ],
@@ -57,7 +57,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "SHINOBI INDI",
     description: "Discipline. Precision. Profit.",
-    images: ["/opengraph-image.png"],
+    images: ["/shinobi-logo.png"],
   },
 };
 
